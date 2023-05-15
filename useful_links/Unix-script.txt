@@ -1,0 +1,23 @@
+###UNIX Script for biodiversity analysis
+#Install global allignment software such as MALT, DIAMOND or BLAST.
+#MALT is a standalone software compatible with MEGAN. DIAMOND is similar but the resulting files need additional "meganization". BLAST returns files that are not readable with MEGAN
+#In this tutorial we will use MALT, which works well with metabarcode data
+
+#1. Download or create the database, to which you want to compare the results of your metabarcoding experiment. We have 18S metabarcodes so we will download the PR2 database. (https://github.com/pr2database/pr2database/releases)
+#In the folder on the unix server this was already downloaded. In addition a Megan mapping file needs to be downloaded, to work with MALT or DIAMOND. 
+#The downloaded files are usually gzipped, so unzipping is required with the command
+
+gzip -d *.gz
+
+#2. With MALT we have to let the server know where to search for the commands for execution. The server has a set of common libraries where it searches for commands, an easy way around is
+#to use package management software such as CONDA that does the managing for you. But not all software is available in CONDA and MALT is one such software. 
+#So we need to tell the server where our command is located. We do this by the following command:
+
+export PATH=$PATH:/home/NIB.SQL/timtd/malt/    #this tells the server to look for commands also in the folder /home/NIB.SQL/timtd/malt/
+
+#3. Then we use malt-build to build our malt-formatted database. For the input we can use either a nonredundant GenBank database or currated ones e.g. PR2
+
+malt-build -i *.fasta -s DNA -d index_PR25.0.0 -a2t /home/NIB.SQL/timtd/malt/megan-map-Feb2022.db # -d specifies the output directory -a2t specifies where the megan mapping file is located
+
+#4. We can then use malt-run to run the global allignment search with our sequences
+malt-run -m BlastN -at SemiGlobal -i sequences.fasta -o RMA/test.rma6 -d index_pr2/ -ou unaligned/ -t 20 -rqc -id 97 -e 1e-40 -top 10
