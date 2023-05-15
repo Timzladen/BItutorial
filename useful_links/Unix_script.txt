@@ -1,0 +1,127 @@
+library(dada2)
+#!!!!MULTITHREADING ONLY POSSIBLE IN UNIX systems
+####------------IMPORTING THE DATA----------------
+
+# Set the working directory
+setwd("C:/Users/TimTD/OneDrive - NIB/prispevki, konference objave/Bioinformatics tutorial")
+path<- "C:/Users/TimTD/OneDrive - NIB/prispevki, konference objave/Bioinformatics tutorial"
+#Go to https://github.com/Timzladen/BItutorial/tree/main/sequences and download the 18Stutorial.zip
+#Unzip it in the directory of the project
+
+# Read the contents of the .gz compressed files line-by-line
+file_list <- list.files(pattern = "*.fastq")
+
+library(dada2) #loads dada2 package
+
+# Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+fnFs <- sort(list.files(path, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
+
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+
+
+##-------------READ QUALITY CHECKS and QC ----------
+plotQualityProfile(fnFs[1:2]) #very good quality
+plotQualityProfile(fnRs[1:2]) #same
+
+
+
+####----------DENOISING---------------------------
+#filter and trim
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+
+#Define filtering parameters. You can use Figaro for this, but unfortunately sequences must have primers still attached to them for this to work. 
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(150,150),
+                     maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+                     compress=TRUE, multithread=FALSE) # On Windows set multithread=FALSE. 
+head(out)
+
+#learn error rates. This is a critical step in the DADA2 algorithm because it defines how dada will process the sample table
+errF <- learnErrors(filtFs, multithread=FALSE)
+errR <- learnErrors(filtRs, multithread=FALSE)
+
+plotErrors(errF, nominalQ=TRUE)
+
+#Sample inference- DADA2 denoising. This step filters through the original dataset using the learned error rates and discards sequences that are flagged as erroneous. 
+#likewise, reads that appear only once are discarded.
+dadaFs <- dada(filtFs, err=errF, multithread=FALSE, pool=TRUE) #we use pool=TRUE to estimate errors across all samples
+dadaRs <- dada(filtRs, err=errR, multithread=FALSE, pool=TRUE) #we use pool=TRUE to estimate errors across all samples
+
+#Merging - now we can merge the reads together to form longer contigs or consensus sequences
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+
+ASVs <- makeSequenceTable(mergers) #this creates an OTU/ASV table from the data
+dim(ASVs)
+
+
+#remove chimeras - chimeras are sequences that do not exist but are constructed by wrongly merging two forward and reverse reads.
+ASVs.nochim <- removeBimeraDenovo(ASVs, method="consensus", multithread=FALSE, verbose=TRUE)
+dim(ASVs.nochim)r
+
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(ASVs.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+
+#####---------------Taxonomy-------------
+#NAIVE BAYES CLASSIFICATION WITH DADA2
+metadata <- read.delim("C:/Users/TimTD/OneDrive - NIB/prispevki, konference objave/Bioinformatics tutorial/metadata.tsv", row.names = 1)
+
+taxa <- assignTaxonomy(ASVs.nochim, "pr2_version_5.0.0_SSU_dada2.fasta.gz", multithread=TRUE)
+
+#export fasta for BLAST/DIAMOND/MALT
+library(seqinr) 
+seqs<- colnames(ASVs.nochim) #get sequences
+list.seqs<- list()
+n<- length(seqs)
+for(i in 1:n){
+  list.seqs[[i]]<- seqs[i]
+}
+names<- paste("Seq", 1:n, sep = "_")
+write.fasta(list.seqs, names= names, nbchar = 320, file.out = "sequences.fasta", as.string = TRUE)
+
+
+
+####----------------Visualization and analysis-------
+library(phyloseq)
+results<- phyloseq(otu_table(ASVs.nochim, taxa_are_rows = FALSE), tax_table(taxa), sample_data(metadata))
+
+#save sequences to a refseq element and rename the ASVs
+dna <- Biostrings::DNAStringSet(taxa_names(results))
+names(dna) <- taxa_names(results)
+results <- merge_phyloseq(results, dna)
+taxa_names(results) <- paste0("ASV", seq(ntaxa(results)))
+results
+
+plot_bar(results, x="Sample", y="Abundance", fill="Phylum")
+
+#To inspect individual elements in the phyloseq object
+View(as.data.frame(tax_table(results)))
+
+#Normalization
+#1. rarefaction
+library(vegan)
+rarecurve(as.data.frame(otu_table(results)))
+rowSums(as.data.frame(otu_table(results)))
+#561452F532471 561453F532472 
+#61954         50678 
+rarefied<- rarefy_even_depth(results) #default value is minimal sample sum
+plot_bar(rarefied, x="Sample", y="Abundance", fill="Phylum")
+tsar<- subset_taxa(rarefied, Phylum=="TSAR")
+plot_bar(tsar, x="Sample", y="Abundance", fill="Class")
+
+#2.relative abundances
+proportions<- transform_sample_counts(results, function(otu) otu/sum(otu))
+plot_bar(proportions, fill = "Phylum")
+
+
+###-------a and b diveristy-------
+#several ways to assess this, but phyloseq has some built-in functions
+sample_data(results)$Depth<- as.factor(sample_data(results)$Depth)
+plot_richness(results, x="Depth", measures=c("Shannon", "Simpson"))
